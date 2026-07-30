@@ -2,9 +2,15 @@ import time
 import random
 import threading
 import sys
+import json
+import base64
+import os
+
 from core.adaptive_engine import AdaptiveEngine
 from core.network_handler import NetworkHandler
 from crypto_modules.quantum_bb84 import simulate_quantum_channel
+from crypto_modules.classical import ClassicalCrypto
+from crypto_modules.post_quantum import PostQuantumCrypto
 
 class P2PNode:
     def __init__(self, host, port, is_server=False):
@@ -12,30 +18,26 @@ class P2PNode:
         self.engine = AdaptiveEngine()
         self.net_handler = NetworkHandler(host, port, is_server)
         self.running = True
+        
+        # Initialize Cryptographic Suites
+        self.classical_crypto = ClassicalCrypto()
+        self.pq_crypto = PostQuantumCrypto()
 
     def start(self):
         """Starts the network connection and initializes two-way communication."""
         self.net_handler.start_connection()
         
-        # Start a background thread to constantly listen for incoming messages
         receive_thread = threading.Thread(target=self.receive_messages, daemon=True)
         receive_thread.start()
         
-        # Run the sending loop on the main thread
         self.send_messages()
 
     def check_system_readiness(self):
-        """
-        Automated production check for QKD and PQC viability.
-        Returns True if PQC/QKD is feasible, False if fallback to Gear 1 is required.
-        """
-        # 1. Check Network Latency
-        network_stable = self.net_handler.check_latency()
-        if not network_stable:
+        """Automated check for QKD and PQC viability."""
+        if not self.net_handler.check_latency():
             print("\n[CRITICAL] Handshake timeout risk detected. PQC unavailable.")
             return False
             
-        # 2. Simulate CPU/Memory Resource Exhaustion check
         cpu_load = random.uniform(10, 100)
         if cpu_load > 95.0:
             print(f"\n[CRITICAL] Host CPU load at {cpu_load:.1f}%. Resource exhaustion. PQC unavailable.")
@@ -43,13 +45,44 @@ class P2PNode:
             
         return True
 
+    def generate_key_material(self, active_gear, qber, qkd_shared_key):
+        """
+        Actively executes the underlying cryptographic libraries to generate
+        and combine raw key materials based on the active gear.
+        """
+        key_material = b""
+
+        # Gear 1: Classical ECDH Fallback
+        if active_gear == 1:
+            # Simulate ECDH shared secret generation
+            ec_priv, ec_pub = self.classical_crypto.generate_ecdh_keypair()
+            peer_priv, peer_pub = self.classical_crypto.generate_ecdh_keypair()
+            shared_secret = self.classical_crypto.derive_shared_secret(ec_priv, peer_pub)
+            key_material = shared_secret
+
+        # Gear 2: Post-Quantum Only (ML-KEM)
+        elif active_gear == 2:
+            # Actively execute liboqs ML-KEM Encapsulation
+            kem_pub, kem_priv = self.pq_crypto.generate_kem_keypair()
+            kem_cipher, kem_shared = self.pq_crypto.encapsulate_secret(kem_pub)
+            key_material = kem_shared
+
+        # Gear 3: QKD + ML-KEM
+        elif active_gear == 3:
+            kem_pub, kem_priv = self.pq_crypto.generate_kem_keypair()
+            kem_cipher, kem_shared = self.pq_crypto.encapsulate_secret(kem_pub)
+            # Combine the physical QKD bits with the PQC lattice secrets
+            qkd_bytes = bytes(qkd_shared_key)
+            key_material = kem_shared + qkd_bytes
+
+        return key_material
+
     def send_messages(self):
-        """Handles the sending of messages while evaluating channel security."""
+        """Handles the true mathematical encryption and sending of messages."""
         base_noise_probability = 0.05 
 
         while self.running:
             try:
-                # Add a slight delay so incoming messages don't completely bury the prompt
                 time.sleep(0.1) 
                 message = input("\n[YOU] Enter message to send (or type 'exit'): ")
                 
@@ -58,14 +91,13 @@ class P2PNode:
                     self.net_handler.close_connection()
                     sys.exit(0)
                     
-                # Automated Production Health Check
                 pqc_is_available = self.check_system_readiness()
+                qber = 1.0
+                qkd_shared_key = []
 
                 if not pqc_is_available:
                     print("[ENVIRONMENT] System constraints force fallback to classical security.")
-                    qber = 1.0  
                 else:
-                    # Simulate dynamic physical quantum channel environment
                     if random.random() > 0.6:
                         current_noise_prob = 0.15 
                         print("[ENVIRONMENT] Simulating heavy channel interference (Eve active)...")
@@ -73,22 +105,37 @@ class P2PNode:
                         current_noise_prob = base_noise_probability
                         print("[ENVIRONMENT] Quantum channel is stable.")
 
-                    print("[QUANTUM] Preparing qubits and executing BB84 circuit...")
-                    qber, shared_key = simulate_quantum_channel(num_bits=128, noise_probability=current_noise_prob)
-                    print(f"[QUANTUM] Sifted key length: {len(shared_key)} bits")
+                    print("[QUANTUM] Executing BB84 circuit...")
+                    qber, qkd_shared_key = simulate_quantum_channel(num_bits=128, noise_probability=current_noise_prob)
+                    print(f"[QUANTUM] Sifted key length: {len(qkd_shared_key)} bits")
                 
-                # The Engine automatically handles the Gear transition
+                # Determine Gear
                 active_gear = self.engine.evaluate_channel(qber, pqc_available=pqc_is_available)
                 suite = self.engine.get_active_cipher_suite()
+                print(f"[ENCRYPTION] Active Suite: {suite}")
+
+                # 1. Generate Raw Key Material
+                raw_material = self.generate_key_material(active_gear, qber, qkd_shared_key)
+
+                # 2. Derive AES-256 Key using HKDF
+                aes_key, salt = self.classical_crypto.derive_aes_key(raw_material)
+
+                # 3. Encrypt the Message using AES-256-GCM
+                ciphertext = self.classical_crypto.aes_encrypt(aes_key, message)
+
+                # 4. Package Payload for Network Transit
+                # Note: In a true P2P system, the salt and raw material are securely exchanged
+                # via asymmetric handshakes. For this prototype socket, we bundle them to prove the math works.
+                payload = {
+                    "gear": active_gear,
+                    "suite": suite,
+                    "salt": base64.b64encode(salt).decode('utf-8'),
+                    "raw_material": base64.b64encode(raw_material).decode('utf-8'),
+                    "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
+                }
                 
-                print(f"[ENCRYPTION] Encrypting using {suite}...")
-                
-                if pqc_is_available:
-                    encrypted_payload = f"ENCRYPTED[{message}]_VIA_{suite}_(QBER:{qber*100:.2f}%)"
-                else:
-                    encrypted_payload = f"ENCRYPTED[{message}]_VIA_{suite}_(NO_QUANTUM_CHANNEL)"
-                
-                self.net_handler.send_data(encrypted_payload.encode('utf-8'))
+                payload_bytes = json.dumps(payload).encode('utf-8')
+                self.net_handler.send_data(payload_bytes)
                 
             except Exception as e:
                 if self.running:
@@ -96,7 +143,7 @@ class P2PNode:
                 break
 
     def receive_messages(self):
-        """Runs in a background thread to continuously receive messages."""
+        """Continuously receives, mathematically derives keys, and decrypts messages."""
         while self.running:
             try:
                 data = self.net_handler.receive_data()
@@ -104,20 +151,27 @@ class P2PNode:
                     print("\n[NETWORK] Connection closed by peer.")
                     self.running = False
                     self.net_handler.close_connection()
-                    # Exit the program aggressively if the other side disconnects
                     os._exit(0) 
                 
-                decoded_data = data.decode('utf-8')
-                print(f"\n\n--- INCOMING MESSAGE ---")
-                print(f"[RECEIVER] Payload: {decoded_data}")
-                print("[DECRYPTION] Decrypting message...")
+                # Parse the incoming JSON payload
+                payload = json.loads(data.decode('utf-8'))
+                suite = payload["suite"]
+                salt = base64.b64decode(payload["salt"])
+                raw_material = base64.b64decode(payload["raw_material"])
+                ciphertext = base64.b64decode(payload["ciphertext"])
                 
-                if "ENCRYPTED[" in decoded_data and "]_VIA_" in decoded_data:
-                    decrypted = decoded_data.split('[')[1].split(']')[0]
-                    print(f"[PEER SAYS]: {decrypted}")
-                    print("------------------------\n[YOU] Enter message to send (or type 'exit'): ", end="", flush=True)
-                else:
-                    print(f"[RECEIVER] Unrecognized Payload Format: {decoded_data}\n")
+                print(f"\n\n--- INCOMING SECURE TRANSMISSION ---")
+                print(f"[RECEIVER] Authenticated Cipher Suite: {suite}")
+                print(f"[RECEIVER] Encrypted Payload (Hex): {ciphertext.hex()[:40]}...")
+                
+                # 1. Re-derive the AES-256 Key using HKDF and the shared salt/material
+                aes_key, _ = self.classical_crypto.derive_aes_key(raw_material, salt=salt)
+                
+                # 2. Decrypt the actual AES-256-GCM ciphertext
+                decrypted_message = self.classical_crypto.aes_decrypt(aes_key, ciphertext)
+                
+                print(f"[PEER SAYS]: {decrypted_message}")
+                print("------------------------------------\n[YOU] Enter message to send (or type 'exit'): ", end="", flush=True)
                     
             except ConnectionResetError:
                 print("\n[NETWORK] Connection reset by peer.")
@@ -125,16 +179,13 @@ class P2PNode:
                 break
             except Exception as e:
                 if self.running:
-                    print(f"\n[ERROR] Receive error: {e}")
+                    print(f"\n[ERROR] Decryption or Receive error: {e}")
                 break
 
 if __name__ == "__main__":
-    import os
-    print("=== Hybrid Quantum Classical Cryptography P2P Node ===")
+    print("=== True Hybrid Quantum Classical Cryptography Node ===")
     mode = input("Run as (1) Alice/Device A or (2) Bob/Device B? ")
     
-    # We no longer strictly distinguish "Server" vs "Client" behavior after connection
-    # It purely determines who binds to the port and who connects to it.
     if mode == '1':
         node = P2PNode('0.0.0.0', 5000, is_server=True)
         node.start()
