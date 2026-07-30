@@ -45,7 +45,7 @@ class NetworkHandler:
             raise ConnectionError("No active connection to send data.")
         self.connection.sendall(data)
 
-    def receive_data(self, buffer_size=4096):
+    def receive_data(self, buffer_size=16384):
         if not self.connection:
             raise ConnectionError("No active connection to receive data.")
         try:

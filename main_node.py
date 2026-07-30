@@ -54,7 +54,6 @@ class P2PNode:
 
         # Gear 1: Classical ECDH Fallback
         if active_gear == 1:
-            # Simulate ECDH shared secret generation
             ec_priv, ec_pub = self.classical_crypto.generate_ecdh_keypair()
             peer_priv, peer_pub = self.classical_crypto.generate_ecdh_keypair()
             shared_secret = self.classical_crypto.derive_shared_secret(ec_priv, peer_pub)
@@ -62,7 +61,6 @@ class P2PNode:
 
         # Gear 2: Post-Quantum Only (ML-KEM)
         elif active_gear == 2:
-            # Actively execute liboqs ML-KEM Encapsulation
             kem_pub, kem_priv = self.pq_crypto.generate_kem_keypair()
             kem_cipher, kem_shared = self.pq_crypto.encapsulate_secret(kem_pub)
             key_material = kem_shared
@@ -71,14 +69,13 @@ class P2PNode:
         elif active_gear == 3:
             kem_pub, kem_priv = self.pq_crypto.generate_kem_keypair()
             kem_cipher, kem_shared = self.pq_crypto.encapsulate_secret(kem_pub)
-            # Combine the physical QKD bits with the PQC lattice secrets
             qkd_bytes = bytes(qkd_shared_key)
             key_material = kem_shared + qkd_bytes
 
         return key_material
 
     def send_messages(self):
-        """Handles the true mathematical encryption and sending of messages."""
+        """Handles the true mathematical encryption, signing, and sending of messages."""
         base_noise_probability = 0.05 
 
         while self.running:
@@ -123,15 +120,18 @@ class P2PNode:
                 # 3. Encrypt the Message using AES-256-GCM
                 ciphertext = self.classical_crypto.aes_encrypt(aes_key, message)
 
-                # 4. Package Payload for Network Transit
-                # Note: In a true P2P system, the salt and raw material are securely exchanged
-                # via asymmetric handshakes. For this prototype socket, we bundle them to prove the math works.
+                # 4. Sign the Ciphertext using ML-DSA (Post-Quantum Authentication)
+                signature, signer_pub_key = self.pq_crypto.sign_message(ciphertext)
+
+                # 5. Package Payload for Network Transit
                 payload = {
                     "gear": active_gear,
                     "suite": suite,
                     "salt": base64.b64encode(salt).decode('utf-8'),
                     "raw_material": base64.b64encode(raw_material).decode('utf-8'),
-                    "ciphertext": base64.b64encode(ciphertext).decode('utf-8')
+                    "ciphertext": base64.b64encode(ciphertext).decode('utf-8'),
+                    "signature": base64.b64encode(signature).decode('utf-8'),
+                    "signer_pub_key": base64.b64encode(signer_pub_key).decode('utf-8')
                 }
                 
                 payload_bytes = json.dumps(payload).encode('utf-8')
@@ -143,7 +143,7 @@ class P2PNode:
                 break
 
     def receive_messages(self):
-        """Continuously receives, mathematically derives keys, and decrypts messages."""
+        """Continuously receives, mathematically verifies, derives keys, and decrypts messages."""
         while self.running:
             try:
                 data = self.net_handler.receive_data()
@@ -159,15 +159,26 @@ class P2PNode:
                 salt = base64.b64decode(payload["salt"])
                 raw_material = base64.b64decode(payload["raw_material"])
                 ciphertext = base64.b64decode(payload["ciphertext"])
+                signature = base64.b64decode(payload["signature"])
+                signer_pub_key = base64.b64decode(payload["signer_pub_key"])
                 
                 print(f"\n\n--- INCOMING SECURE TRANSMISSION ---")
                 print(f"[RECEIVER] Authenticated Cipher Suite: {suite}")
                 print(f"[RECEIVER] Encrypted Payload (Hex): {ciphertext.hex()[:40]}...")
+
+                # 1. Verify Post-Quantum Signature (ML-DSA) before doing anything else
+                is_valid = self.pq_crypto.verify_signature(ciphertext, signature, signer_pub_key)
+                if not is_valid:
+                    print("[CRITICAL ALERT] ML-DSA Signature Verification Failed! Message dropped.")
+                    print("------------------------------------\n[YOU] Enter message to send (or type 'exit'): ", end="", flush=True)
+                    continue  # Drop the malicious packet and wait for the next one
+
+                print("[AUTHENTICATION] ML-DSA Signature Verified Successfully.")
                 
-                # 1. Re-derive the AES-256 Key using HKDF and the shared salt/material
+                # 2. Re-derive the AES-256 Key using HKDF and the shared salt/material
                 aes_key, _ = self.classical_crypto.derive_aes_key(raw_material, salt=salt)
                 
-                # 2. Decrypt the actual AES-256-GCM ciphertext
+                # 3. Decrypt the actual AES-256-GCM ciphertext
                 decrypted_message = self.classical_crypto.aes_decrypt(aes_key, ciphertext)
                 
                 print(f"[PEER SAYS]: {decrypted_message}")
