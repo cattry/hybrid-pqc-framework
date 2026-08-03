@@ -53,6 +53,8 @@ from crypto.privacy import (
 
 from crypto.aes import decrypt_message
 
+from crypto.hamming import hamming_decode
+
 # ----------------------------------------------------
 
 HOST = "127.0.0.1"
@@ -258,11 +260,15 @@ def main():
 
                 nonce = bytes.fromhex(payload["nonce"])
                 ciphertext = bytes.fromhex(payload["ciphertext"])
+                decoded_ciphertext, corrected = hamming_decode(ciphertext)
+                print("\nHamming Corrected Errors")
+                print(corrected)
+
 
                 message = decrypt_message(
                     final_digest,
                     nonce,
-                    ciphertext
+                    decoded_ciphertext
                 )
 
                 print("\n" + "=" * 60)

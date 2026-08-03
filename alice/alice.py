@@ -55,6 +55,8 @@ from crypto.privacy import (
 
 from crypto.aes import encrypt_message
 
+from crypto.hamming import hamming_encode
+
 # ----------------------------------------------------
 
 HOST = "127.0.0.1"
@@ -329,6 +331,21 @@ def main():
         final_digest,
         message
     )
+    encoded_ciphertext = hamming_encode(ciphertext)
+    # ----------------------------------------
+    # Simulate one-bit transmission error
+    # ----------------------------------------
+
+    encoded_ciphertext = bytearray(encoded_ciphertext)
+
+    encoded_ciphertext[5] ^= 0x04      # flip one bit
+
+    encoded_ciphertext = bytes(encoded_ciphertext)
+
+    print("\nInjected 1-bit channel error.")
+
+    print("\nHamming Encoded Ciphertext")
+    print(encoded_ciphertext.hex())
 
     print("\nOriginal Message")
     print(message)
@@ -342,7 +359,7 @@ def main():
         MessageType.ENCRYPTED_MESSAGE,
         {
             "nonce": nonce.hex(),
-            "ciphertext": ciphertext.hex()
+            "ciphertext": encoded_ciphertext.hex()
         }
     )
 
