@@ -37,9 +37,9 @@ class PostQuantumCrypto:
 
     def decapsulate_secret(self, ciphertext, secret_key):
         """Client decapsulates the shared secret using their private key."""
-        with oqs.KeyEncapsulation(self.kem_alg) as client:
-            client.secret_key = secret_key
-            shared_secret = client.decap_secret(ciphertext)
+        # Pass the secret_key directly into the constructor so liboqs handles the C-type casting
+        with oqs.KeyEncapsulation(self.kem_alg, secret_key=secret_key) as client:
+            shared_secret = cliegui-nt.decap_secret(ciphertext)
             return shared_secret
 
     def sign_message(self, message):
